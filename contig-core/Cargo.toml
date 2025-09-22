@@ -1,0 +1,11 @@
+[package]
+name = "contig-core"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+nalgebra = ["dep:nalgebra"]
+
+[dependencies]
+nalgebra = { version = "0.34", optional = true, default-features = true }

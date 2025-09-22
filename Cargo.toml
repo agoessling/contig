@@ -1,0 +1,3 @@
+[workspace]
+members = ["contig-core", "contig-demo", "contig-derive"]
+resolver = "2"

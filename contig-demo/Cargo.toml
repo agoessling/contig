@@ -1,0 +1,9 @@
+[package]
+name = "contig-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+contig-core   = { path = "../contig-core", features = ["nalgebra"] }
+contig-derive = { path = "../contig-derive" }
+nalgebra      = "0.34"
