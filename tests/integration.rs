@@ -1,5 +1,6 @@
 use contig_core::prelude::*;
 use contig_derive::contig;
+use contig_demo::Vec3;
 
 #[contig(scalar = f64)]
 struct Link {

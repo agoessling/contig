@@ -52,28 +52,25 @@ fn parse_flags(attrs: &[Attribute]) {
 /// configuration/layout/view trio plus a [`contig_core::Contig`] implementation.
 ///
 /// ```
-/// use contig_core::Vec3;
 /// use contig_derive::contig;
 ///
 /// #[contig(scalar = f64)]
-/// struct Pose {
-///     position: Vec3<f64>,
-///     velocity: Vec3<f64>,
+/// struct PointMass {
+///     mass: f64,
+///     bias: f64,
 /// }
 ///
-/// let cfg = PoseCfg {
-///     position: (),
-///     velocity: (),
-/// };
-/// let layout = PoseLayout::from_config(&cfg).unwrap();
+/// let cfg = PointMassCfg { mass: (), bias: () };
+/// let layout = PointMassLayout::from_config(&cfg).unwrap();
 /// let mut buffer = vec![0.0; layout.len()];
 /// {
-///     let mut pose = layout.view(buffer.as_mut_slice());
-///     pose.position().set(1.0, 0.0, 0.0);
-///     pose.velocity().set(0.0, 1.0, 0.0);
+///     let mut view = layout.view(buffer.as_mut_slice());
+///     *view.mass() = 12.0;
+///     *view.bias() = 0.5;
 /// }
-/// let pose = layout.cview(buffer.as_slice());
-/// assert_eq!(*pose.position().x(), 1.0);
+/// let view = layout.cview(buffer.as_slice());
+/// assert_eq!(*view.mass(), 12.0);
+/// assert_eq!(*view.bias(), 0.5);
 /// ```
 ///
 /// The macro preserves the user-written struct (minus helper attributes) and

@@ -5,7 +5,7 @@
 //!   exposes read/write views for that range.
 //! - [`TakeCursor`] is a tiny helper for carving non-overlapping ranges while assembling
 //!   a struct layout.
-//! - Ready-made adapters for scalars, [`Vec3`], dynamic arrays (`Dyn<[T]>`), and (optionally)
+//! - Ready-made adapters for scalars, dynamic arrays (`Dyn<[T]>`), and (optionally)
 //!   nalgebra vectors/matrices so common building blocks slot into a contiguous buffer without
 //!   boilerplate.
 //!
@@ -125,103 +125,6 @@ macro_rules! impl_contig_scalar {
 }
 
 impl_contig_scalar!(f32, f64);
-
-// ---------- Vec3 ----------
-
-/// Marker type representing a fixed `[F; 3]` contiguous vector.
-#[derive(Clone, Copy, Debug)]
-pub struct Vec3<F>(PhantomData<F>);
-
-/// Read-only view across three consecutive scalars laid out as `x`, `y`, `z`.
-pub struct Vec3View<'a, F> {
-    pub(crate) slice: &'a [F],
-} // len = 3
-/// Mutable view across three consecutive scalars laid out as `x`, `y`, `z`.
-pub struct Vec3ViewMut<'a, F> {
-    pub(crate) slice: &'a mut [F],
-} // len = 3
-
-impl<'a, F> Vec3View<'a, F> {
-    #[inline]
-    /// Access the `x` component of the vector.
-    pub fn x(&self) -> &F {
-        &self.slice[0]
-    }
-    #[inline]
-    /// Access the `y` component of the vector.
-    pub fn y(&self) -> &F {
-        &self.slice[1]
-    }
-    #[inline]
-    /// Access the `z` component of the vector.
-    pub fn z(&self) -> &F {
-        &self.slice[2]
-    }
-}
-impl<'a, F> Vec3ViewMut<'a, F> {
-    #[inline]
-    /// Access the mutable `x` component of the vector.
-    pub fn x(&mut self) -> &mut F {
-        &mut self.slice[0]
-    }
-    #[inline]
-    /// Access the mutable `y` component of the vector.
-    pub fn y(&mut self) -> &mut F {
-        &mut self.slice[1]
-    }
-    #[inline]
-    /// Access the mutable `z` component of the vector.
-    pub fn z(&mut self) -> &mut F {
-        &mut self.slice[2]
-    }
-    #[inline]
-    /// Set all components in one call (requires the scalar to be `Copy`).
-    pub fn set(&mut self, x: F, y: F, z: F)
-    where
-        F: Copy,
-    {
-        self.slice[0] = x;
-        self.slice[1] = y;
-        self.slice[2] = z;
-    }
-}
-
-/// Layout metadata marker for [`Vec3`]; it carries no additional information.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Vec3Layout;
-
-impl<F> Contig<F> for Vec3<F> {
-    type Config = ();
-    type Layout = Vec3Layout;
-    type ConstView<'a>
-        = Vec3View<'a, F>
-    where
-        F: 'a;
-    type MutView<'a>
-        = Vec3ViewMut<'a, F>
-    where
-        F: 'a;
-
-    fn layout(_config: &Self::Config) -> Result<Self::Layout> {
-        Ok(Vec3Layout)
-    }
-
-    fn len(_layout: &Self::Layout) -> usize {
-        3
-    }
-
-    fn view<'a>(_layout: &'a Self::Layout, buf: &'a [F]) -> Self::ConstView<'a> {
-        debug_assert!(buf.len() >= 3);
-        Vec3View { slice: &buf[..3] }
-    }
-
-    fn view_mut<'a>(_layout: &'a Self::Layout, buf: &'a mut [F]) -> Self::MutView<'a> {
-        debug_assert!(buf.len() >= 3);
-        Vec3ViewMut {
-            slice: &mut buf[..3],
-        }
-    }
-}
 
 // ---------- Dyn<[T]> (dynamic arrays) ----------
 
@@ -502,13 +405,76 @@ pub mod prelude {
     pub use super::na_types::*;
     pub use super::{
         Contig, Dyn, DynArrayConfig, DynArrayConstView, DynArrayLayout, DynArrayMutView,
-        LayoutError, Result, TakeCursor, Vec3, Vec3View, Vec3ViewMut,
+        LayoutError, Result, TakeCursor,
     };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::marker::PhantomData;
+
+    /// Minimal test-only `Contig` implementation representing three scalars in a row.
+    struct Triple<F>(PhantomData<F>);
+
+    struct TripleConstView<'a, F> {
+        slice: &'a [F],
+    }
+
+    struct TripleMutView<'a, F> {
+        slice: &'a mut [F],
+    }
+
+    impl<'a, F> TripleConstView<'a, F> {
+        fn components(&self) -> (&F, &F, &F) {
+            (&self.slice[0], &self.slice[1], &self.slice[2])
+        }
+    }
+
+    impl<'a, F> TripleMutView<'a, F> {
+        fn set(&mut self, x: F, y: F, z: F)
+        where
+            F: Copy,
+        {
+            self.slice[0] = x;
+            self.slice[1] = y;
+            self.slice[2] = z;
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct TripleLayout;
+
+    impl<F> Contig<F> for Triple<F> {
+        type Config = ();
+        type Layout = TripleLayout;
+        type ConstView<'a>
+            = TripleConstView<'a, F>
+        where
+            F: 'a;
+        type MutView<'a>
+            = TripleMutView<'a, F>
+        where
+            F: 'a;
+
+        fn layout(_config: &Self::Config) -> Result<Self::Layout> {
+            Ok(TripleLayout)
+        }
+
+        fn len(_layout: &Self::Layout) -> usize {
+            3
+        }
+
+        fn view<'a>(_layout: &'a Self::Layout, buf: &'a [F]) -> Self::ConstView<'a> {
+            TripleConstView { slice: &buf[..3] }
+        }
+
+        fn view_mut<'a>(_layout: &'a Self::Layout, buf: &'a mut [F]) -> Self::MutView<'a> {
+            TripleMutView {
+                slice: &mut buf[..3],
+            }
+        }
+    }
 
     #[test]
     fn take_cursor_allocates_disjoint_ranges() {
@@ -534,18 +500,19 @@ mod tests {
     }
 
     #[test]
-    fn vec3_contig_views_share_buffer() {
-        let layout = Vec3::<f64>::layout(&()).unwrap();
-        assert_eq!(Vec3::<f64>::len(&layout), 3);
+    fn triple_contig_views_share_buffer() {
+        let layout = Triple::<f64>::layout(&()).unwrap();
+        assert_eq!(Triple::<f64>::len(&layout), 3);
         let mut buf = [0.0f64; 3];
         {
-            let mut view = Vec3::<f64>::view_mut(&layout, &mut buf);
+            let mut view = Triple::<f64>::view_mut(&layout, &mut buf);
             view.set(1.0, 2.0, 3.0);
         }
-        let view = Vec3::<f64>::view(&layout, &buf);
-        assert_eq!(*view.x(), 1.0);
-        assert_eq!(*view.y(), 2.0);
-        assert_eq!(*view.z(), 3.0);
+        let view = Triple::<f64>::view(&layout, &buf);
+        let (x, y, z) = view.components();
+        assert_eq!(*x, 1.0);
+        assert_eq!(*y, 2.0);
+        assert_eq!(*z, 3.0);
     }
 
     #[test]
@@ -570,27 +537,29 @@ mod tests {
     }
 
     #[test]
-    fn dyn_array_of_vec3() {
+    fn dyn_array_of_triples() {
         let cfg = DynArrayConfig { len: 2, elem: () };
-        let layout = Dyn::<[Vec3<f64>]>::layout(&cfg).unwrap();
-        assert_eq!(Dyn::<[Vec3<f64>]>::len(&layout), 6);
+        let layout = Dyn::<[Triple<f64>]>::layout(&cfg).unwrap();
+        assert_eq!(Dyn::<[Triple<f64>]>::len(&layout), 6);
         let mut buf = vec![0.0f64; 6];
 
         {
-            let mut view = Dyn::<[Vec3<f64>]>::view_mut(&layout, &mut buf);
+            let mut view = Dyn::<[Triple<f64>]>::view_mut(&layout, &mut buf);
             view.get_mut(0).set(1.0, 2.0, 3.0);
             view.get_mut(1).set(4.0, 5.0, 6.0);
         }
 
-        let view = Dyn::<[Vec3<f64>]>::view(&layout, &buf);
+        let view = Dyn::<[Triple<f64>]>::view(&layout, &buf);
         let v0 = view.get(0);
-        assert_eq!(*v0.x(), 1.0);
-        assert_eq!(*v0.y(), 2.0);
-        assert_eq!(*v0.z(), 3.0);
+        let (x0, y0, z0) = v0.components();
+        assert_eq!(*x0, 1.0);
+        assert_eq!(*y0, 2.0);
+        assert_eq!(*z0, 3.0);
         let v1 = view.get(1);
-        assert_eq!(*v1.x(), 4.0);
-        assert_eq!(*v1.y(), 5.0);
-        assert_eq!(*v1.z(), 6.0);
+        let (x1, y1, z1) = v1.components();
+        assert_eq!(*x1, 4.0);
+        assert_eq!(*y1, 5.0);
+        assert_eq!(*z1, 6.0);
     }
 
     #[test]

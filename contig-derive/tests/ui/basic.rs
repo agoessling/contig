@@ -5,14 +5,14 @@ use contig_derive::contig;
 struct Sample {
     #[contig(len)]
     dyns: Dyn<[f64]>,
-    vec: Vec3<f64>,
+    scalar: f64,
 }
 
 fn main() {
     let cfg = SampleCfg {
         dyns: DynArrayConfig { len: 2, elem: () },
-        vec: (),
+        scalar: (),
     };
     let layout = SampleLayout::from_config(&cfg).unwrap();
-    assert_eq!(<Sample as Contig<f64>>::len(&layout), 5);
+    assert_eq!(<Sample as Contig<f64>>::len(&layout), 3);
 }

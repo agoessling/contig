@@ -1,5 +1,6 @@
 use contig_core::na_types as na;
 use contig_core::prelude::*;
+use contig_demo::Vec3;
 use contig_derive::contig;
 
 #[contig(scalar = f64)]
