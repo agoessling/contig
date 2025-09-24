@@ -1,19 +1,16 @@
-//! contig-core: traits, helpers, and allowed-type wrappers
+//! contig-core: contiguous layout trait, helpers, and common adapters
 //!
-//! This crate defines:
-//! - Spec / DynSpec traits (how a type maps to a contiguous [F] slice)
-//! - DynArgs (runtime dims), TakeCursor (linear range allocator)
-//! - A few "allowed types":
-//!     * Scalar F (f32 / f64)
-//!     * Vec3<F> small fixed vector, with zero-copy views
-//!     * Fixed array [T; N]     (static size)
-//!     * Dyn<[T]>               (dynamic arrays with homogeneous elements)
-//!     * (feature "nalgebra"): NaSVector/NaSMatrix (static), NaDVector/NaDMatrix (dynamic)
+//! Key pieces:
+//! - [`Contig`] trait (how a type maps to a contiguous `&[F]` slice)
+//! - [`TakeCursor`] for building struct layouts from disjoint ranges
+//! - Built-in adapters: scalars, [`Vec3`], dynamic arrays via [`Dyn<[T]>`],
+//!   and (optionally) nalgebra vector/matrix wrappers
 //!
-//! The proc-macro in `contig-derive` will generate Layout + View types and
-//! rely on these trait impls to produce field sub-views.
+//! The `contig-derive` macro generates per-struct config/layout/view types
+//! that implement [`Contig`], allowing nested zero-copy views over a single
+//! contiguous scalar buffer.
 
-use core::ops::Range;
+use core::{marker::PhantomData, ops::Range};
 
 // ---------- Core error/result ----------
 
@@ -23,30 +20,6 @@ pub enum LayoutError {
     InvalidSize(&'static str),
 }
 pub type Result<T> = core::result::Result<T, LayoutError>;
-
-// ---------- Runtime sizing arguments ----------
-
-/// Runtime shape arguments for a particular field or element.
-/// Only one of {len} or {shape} is typically set for a given node.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct DynArgs {
-    pub len: Option<usize>, // dynamic vector length / array element count
-    pub shape: Option<(usize, usize)>, // dynamic matrix shape (rows, cols)
-}
-impl DynArgs {
-    pub fn with_len(len: usize) -> Self {
-        Self {
-            len: Some(len),
-            shape: None,
-        }
-    }
-    pub fn with_shape(rows: usize, cols: usize) -> Self {
-        Self {
-            len: None,
-            shape: Some((rows, cols)),
-        }
-    }
-}
 
 // ---------- Slice range cursor (linear, disjoint) ----------
 
@@ -70,132 +43,77 @@ impl TakeCursor {
     }
 }
 
-// ---------- Traits: Spec (static) / DynSpec (runtime) ----------
+// ---------- Contig trait ----------
 
-/// A statically-shaped value that occupies exactly STATIC_LEN scalars in a flat buffer.
-pub trait Spec<F> {
-    const STATIC_LEN: usize;
-
-    type CView<'a>: 'a
+/// Describes how a value occupies and views a region inside a flat `[F]` slice.
+pub trait Contig<F> {
+    /// Runtime configuration required to size this value.
+    type Config;
+    /// Fully computed layout metadata (cached by callers).
+    type Layout;
+    /// Read-only view type borrowing from the backing slice.
+    type ConstView<'a>: 'a
     where
         F: 'a,
-        Self: 'a;
-    type MView<'a>: 'a
+        Self::Layout: 'a;
+    /// Mutable view type borrowing from the backing slice.
+    type MutView<'a>: 'a
     where
         F: 'a,
-        Self: 'a;
+        Self::Layout: 'a;
 
-    /// Build a read-only view from an exact sub-slice (length == STATIC_LEN).
-    fn cview<'a>(buf: &'a [F]) -> Self::CView<'a>;
-    /// Build a mutable view from an exact sub-slice (length == STATIC_LEN).
-    fn mview<'a>(buf: &'a mut [F]) -> Self::MView<'a>;
+    /// Compute layout metadata from configuration.
+    fn layout(config: &Self::Config) -> Result<Self::Layout>;
+    /// Total scalar footprint for this layout.
+    fn len(layout: &Self::Layout) -> usize;
+    /// Build a read-only view into `buf` using this layout.
+    fn view<'a>(layout: &'a Self::Layout, buf: &'a [F]) -> Self::ConstView<'a>;
+    /// Build a mutable view into `buf` using this layout.
+    fn view_mut<'a>(layout: &'a Self::Layout, buf: &'a mut [F]) -> Self::MutView<'a>;
 }
 
-/// A dynamically-shaped value (vector, matrix, or array of T) whose size is
-/// determined at configuration time and remains constant at runtime.
-pub trait DynSpec<F> {
-    type CView<'a>: 'a
-    where
-        F: 'a,
-        Self: 'a;
-    type MView<'a>: 'a
-    where
-        F: 'a,
-        Self: 'a;
+// ---------- Scalars ----------
 
-    /// Footprint (number of scalars) given runtime args for THIS node.
-    fn dyn_len(args: &DynArgs) -> usize;
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ScalarLayout;
 
-    /// Optional: when this node is an array-of-dynamic elements, you may also
-    /// receive element args (e.g., per-matrix shape). Default ignores element args.
-    fn dyn_len_with_elem(args: &DynArgs, _elem_args: &DynArgs) -> usize {
-        Self::dyn_len(args)
-    }
+macro_rules! impl_contig_scalar {
+    ($($t:ty),* $(,)?) => {
+        $(
+            impl Contig<$t> for $t {
+                type Config = ();
+                type Layout = ScalarLayout;
+                type ConstView<'a> = &'a $t;
+                type MutView<'a> = &'a mut $t;
 
-    /// Build a read-only view for THIS node, using its args.
-    fn cview<'a>(buf: &'a [F], args: &DynArgs) -> Self::CView<'a>;
-    /// Build a mutable view for THIS node, using its args.
-    fn mview<'a>(buf: &'a mut [F], args: &DynArgs) -> Self::MView<'a>;
+                fn layout(_config: &Self::Config) -> Result<Self::Layout> {
+                    Ok(ScalarLayout)
+                }
 
-    /// Build a view for an "array of dynamic elements" node, where the element
-    /// has its own DynArgs. Default delegates to cview/mview (no elements).
-    fn cview_full<'a>(
-        buf: &'a [F],
-        args: &DynArgs,
-        _elem_args: &DynArgs,
-    ) -> Self::CView<'a> {
-        Self::cview(buf, args)
-    }
-    fn mview_full<'a>(
-        buf: &'a mut [F],
-        args: &DynArgs,
-        _elem_args: &DynArgs,
-    ) -> Self::MView<'a> {
-        Self::mview(buf, args)
-    }
-}
+                fn len(_layout: &Self::Layout) -> usize {
+                    1
+                }
 
-// ---------- Allowed type: Scalar F (f32/f64) ----------
+                fn view<'a>(_layout: &'a Self::Layout, buf: &'a [$t]) -> Self::ConstView<'a> {
+                    debug_assert!(buf.len() >= 1);
+                    &buf[0]
+                }
 
-macro_rules! impl_spec_scalar {
-    ($t:ty) => {
-        impl Spec<$t> for $t {
-            const STATIC_LEN: usize = 1;
-            type CView<'a>
-                = &'a $t
-            where
-                $t: 'a;
-            type MView<'a>
-                = &'a mut $t
-            where
-                $t: 'a;
-
-            #[inline]
-            fn cview<'a>(buf: &'a [$t]) -> Self::CView<'a> {
-                debug_assert_eq!(buf.len(), 1);
-                &buf[0]
+                fn view_mut<'a>(_layout: &'a Self::Layout, buf: &'a mut [$t]) -> Self::MutView<'a> {
+                    debug_assert!(buf.len() >= 1);
+                    &mut buf[0]
+                }
             }
-            #[inline]
-            fn mview<'a>(buf: &'a mut [$t]) -> Self::MView<'a> {
-                debug_assert_eq!(buf.len(), 1);
-                &mut buf[0]
-            }
-        }
-
-        impl DynSpec<$t> for $t {
-            type CView<'a>
-                = &'a $t
-            where
-                $t: 'a;
-            type MView<'a>
-                = &'a mut $t
-            where
-                $t: 'a;
-
-            #[inline]
-            fn dyn_len(_args: &DynArgs) -> usize {
-                1
-            }
-
-            #[inline]
-            fn cview<'a>(buf: &'a [$t], _args: &DynArgs) -> Self::CView<'a> {
-                < $t as Spec<$t> >::cview(buf)
-            }
-
-            #[inline]
-            fn mview<'a>(buf: &'a mut [$t], _args: &DynArgs) -> Self::MView<'a> {
-                < $t as Spec<$t> >::mview(buf)
-            }
-        }
+        )*
     };
 }
-impl_spec_scalar!(f32);
-impl_spec_scalar!(f64);
 
-// ---------- Allowed type: Vec3<F> (small fixed vector) ----------
+impl_contig_scalar!(f32, f64);
+
+// ---------- Vec3 ----------
 
 #[derive(Clone, Copy, Debug)]
-pub struct Vec3<F>(core::marker::PhantomData<F>);
+pub struct Vec3<F>(PhantomData<F>);
 
 pub struct Vec3View<'a, F> {
     pub(crate) slice: &'a [F],
@@ -242,455 +160,291 @@ impl<'a, F> Vec3ViewMut<'a, F> {
     }
 }
 
-impl<F> Spec<F> for Vec3<F> {
-    const STATIC_LEN: usize = 3;
-    type CView<'a>
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Vec3Layout;
+
+impl<F> Contig<F> for Vec3<F> {
+    type Config = ();
+    type Layout = Vec3Layout;
+    type ConstView<'a>
         = Vec3View<'a, F>
     where
         F: 'a;
-    type MView<'a>
+    type MutView<'a>
         = Vec3ViewMut<'a, F>
     where
         F: 'a;
 
-    #[inline]
-    fn cview<'a>(buf: &'a [F]) -> Self::CView<'a> {
-        debug_assert_eq!(buf.len(), 3);
-        Vec3View { slice: buf }
-    }
-    #[inline]
-    fn mview<'a>(buf: &'a mut [F]) -> Self::MView<'a> {
-        debug_assert_eq!(buf.len(), 3);
-        Vec3ViewMut { slice: buf }
-    }
-}
-
-impl<F> DynSpec<F> for Vec3<F> {
-    type CView<'a>
-        = Vec3View<'a, F>
-    where
-        F: 'a,
-        Vec3<F>: 'a;
-    type MView<'a>
-        = Vec3ViewMut<'a, F>
-    where
-        F: 'a,
-        Vec3<F>: 'a;
-
-    #[inline]
-    fn dyn_len(_args: &DynArgs) -> usize {
-        Vec3::<F>::STATIC_LEN
+    fn layout(_config: &Self::Config) -> Result<Self::Layout> {
+        Ok(Vec3Layout)
     }
 
-    #[inline]
-    fn cview<'a>(buf: &'a [F], _args: &DynArgs) -> Self::CView<'a> {
-        <Vec3<F> as Spec<F>>::cview(buf)
+    fn len(_layout: &Self::Layout) -> usize {
+        3
     }
 
-    #[inline]
-    fn mview<'a>(buf: &'a mut [F], _args: &DynArgs) -> Self::MView<'a> {
-        <Vec3<F> as Spec<F>>::mview(buf)
+    fn view<'a>(_layout: &'a Self::Layout, buf: &'a [F]) -> Self::ConstView<'a> {
+        debug_assert!(buf.len() >= 3);
+        Vec3View { slice: &buf[..3] }
+    }
+
+    fn view_mut<'a>(_layout: &'a Self::Layout, buf: &'a mut [F]) -> Self::MutView<'a> {
+        debug_assert!(buf.len() >= 3);
+        Vec3ViewMut {
+            slice: &mut buf[..3],
+        }
     }
 }
 
-// ---------- Allowed type: Fixed array [T; N] (static) ----------
+// ---------- Dyn<[T]> (dynamic arrays) ----------
 
-impl<F, T, const N: usize> Spec<F> for [T; N]
+pub struct Dyn<T: ?Sized>(PhantomData<T>);
+
+#[derive(Clone, Copy, Debug)]
+pub struct DynArrayConfig<TCfg> {
+    pub len: usize,
+    pub elem: TCfg,
+}
+
+#[derive(Clone, Debug)]
+pub struct DynArrayLayout<TLayout> {
+    pub len: usize,
+    pub elem_layout: TLayout,
+    pub elem_len: usize,
+}
+
+pub struct DynArrayConstView<'a, F, T>
 where
-    T: Spec<F>,
+    T: Contig<F>,
+    T::Layout: Clone,
 {
-    const STATIC_LEN: usize = N * T::STATIC_LEN;
-
-    type CView<'a>
-        = ArrayCView<'a, F, T, N>
-    where
-        F: 'a,
-        T: 'a;
-    type MView<'a>
-        = ArrayMView<'a, F, T, N>
-    where
-        F: 'a,
-        T: 'a;
-
-    fn cview<'a>(buf: &'a [F]) -> Self::CView<'a> {
-        debug_assert_eq!(buf.len(), Self::STATIC_LEN);
-        ArrayCView {
-            base: buf,
-            _marker: core::marker::PhantomData,
-        }
-    }
-    fn mview<'a>(buf: &'a mut [F]) -> Self::MView<'a> {
-        debug_assert_eq!(buf.len(), Self::STATIC_LEN);
-        ArrayMView {
-            base: buf,
-            _marker: core::marker::PhantomData,
-        }
-    }
-}
-
-impl<F, T, const N: usize> DynSpec<F> for [T; N]
-where
-    T: Spec<F>,
-{
-    type CView<'a>
-        = ArrayCView<'a, F, T, N>
-    where
-        F: 'a,
-        [T; N]: 'a;
-    type MView<'a>
-        = ArrayMView<'a, F, T, N>
-    where
-        F: 'a,
-        [T; N]: 'a;
-
-    #[inline]
-    fn dyn_len(_args: &DynArgs) -> usize {
-        <[T; N] as Spec<F>>::STATIC_LEN
-    }
-
-    #[inline]
-    fn cview<'a>(buf: &'a [F], _args: &DynArgs) -> Self::CView<'a> {
-        <[T; N] as Spec<F>>::cview(buf)
-    }
-
-    #[inline]
-    fn mview<'a>(buf: &'a mut [F], _args: &DynArgs) -> Self::MView<'a> {
-        <[T; N] as Spec<F>>::mview(buf)
-    }
-}
-
-/// Read-only view over a fixed array of `T` packed consecutively.
-pub struct ArrayCView<'a, F, T: Spec<F>, const N: usize> {
-    base: &'a [F],
-    _marker: core::marker::PhantomData<&'a T>,
-}
-/// Mutable view over a fixed array of `T` packed consecutively.
-pub struct ArrayMView<'a, F, T: Spec<F>, const N: usize> {
-    base: &'a mut [F],
-    _marker: core::marker::PhantomData<&'a T>,
-}
-
-impl<'a, F, T: Spec<F>, const N: usize> ArrayCView<'a, F, T, N> {
-    #[inline]
-    pub fn len(&self) -> usize {
-        N
-    }
-    #[inline]
-    pub fn get(&self, i: usize) -> T::CView<'_> {
-        let span = T::STATIC_LEN;
-        let start = i * span;
-        T::cview(&self.base[start..start + span])
-    }
-}
-impl<'a, F, T: Spec<F>, const N: usize> ArrayMView<'a, F, T, N> {
-    #[inline]
-    pub fn len(&self) -> usize {
-        N
-    }
-    #[inline]
-    pub fn get_mut(&mut self, i: usize) -> T::MView<'_> {
-        let span = T::STATIC_LEN;
-        let start = i * span;
-        T::mview(&mut self.base[start..start + span])
-    }
-}
-
-// ---------- Allowed type: Dyn<[T]> (dynamic array, homogeneous elements) ----------
-
-/// A dynamic array container (homogeneous) recognized by the macro.
-/// The element `T` may be `Spec<F>` (static) or itself a dynamic type.
-pub struct Dyn<T: ?Sized>(core::marker::PhantomData<T>);
-
-/// For Dyn<[T]>, the node's args carry `len = N`.
-/// Element args (if any) are passed via the extra elem_args parameter.
-impl<F, T> DynSpec<F> for Dyn<[T]>
-where
-    T: DynSpec<F>,
-{
-    type CView<'a>
-        = DynArrayCView<'a, F, T>
-    where
-        F: 'a,
-        T: 'a;
-    type MView<'a>
-        = DynArrayMView<'a, F, T>
-    where
-        F: 'a,
-        T: 'a;
-
-    fn dyn_len(args: &DynArgs) -> usize {
-        let n = args.len.expect("Dyn<[T]> requires len");
-        if n == 0 {
-            return 0;
-        }
-        n * T::dyn_len(&DynArgs::default())
-    }
-
-    fn dyn_len_with_elem(args: &DynArgs, elem_args: &DynArgs) -> usize {
-        let n = args.len.expect("Dyn<[T]> requires len");
-        if n == 0 {
-            return 0;
-        }
-        n * T::dyn_len(elem_args)
-    }
-
-    fn cview<'a>(buf: &'a [F], args: &DynArgs) -> Self::CView<'a> {
-        let count = args.len.expect("Dyn<[T]> requires len");
-        let elem_span = if count == 0 {
-            0
-        } else {
-            debug_assert_eq!(buf.len() % count, 0);
-            buf.len() / count
-        };
-        DynArrayCView {
-            base: buf,
-            count,
-            elem_args: DynArgs::default(),
-            elem_span,
-            _marker: core::marker::PhantomData,
-        }
-    }
-
-    fn mview<'a>(buf: &'a mut [F], args: &DynArgs) -> Self::MView<'a> {
-        let count = args.len.expect("Dyn<[T]> requires len");
-        let elem_span = if count == 0 {
-            0
-        } else {
-            debug_assert_eq!(buf.len() % count, 0);
-            buf.len() / count
-        };
-        DynArrayMView {
-            base: buf,
-            count,
-            elem_args: DynArgs::default(),
-            elem_span,
-            _marker: core::marker::PhantomData,
-        }
-    }
-
-    fn cview_full<'a>(buf: &'a [F], args: &DynArgs, elem_args: &DynArgs) -> Self::CView<'a> {
-        let count = args.len.expect("Dyn<[T]> requires len");
-        let elem_span = if count == 0 {
-            0
-        } else {
-            let span = T::dyn_len(elem_args);
-            debug_assert_eq!(buf.len(), count * span);
-            span
-        };
-        DynArrayCView {
-            base: buf,
-            count,
-            elem_args: *elem_args,
-            elem_span,
-            _marker: core::marker::PhantomData,
-        }
-    }
-
-    fn mview_full<'a>(
-        buf: &'a mut [F],
-        args: &DynArgs,
-        elem_args: &DynArgs,
-    ) -> Self::MView<'a> {
-        let count = args.len.expect("Dyn<[T]> requires len");
-        let elem_span = if count == 0 {
-            0
-        } else {
-            let span = T::dyn_len(elem_args);
-            debug_assert_eq!(buf.len(), count * span);
-            span
-        };
-        DynArrayMView {
-            base: buf,
-            count,
-            elem_args: *elem_args,
-            elem_span,
-            _marker: core::marker::PhantomData,
-        }
-    }
-}
-
-/// Read-only view over a Dyn<[T]> where T: DynSpec<F>
-pub struct DynArrayCView<'a, F, T: DynSpec<F>> {
     base: &'a [F],
     count: usize,
-    elem_args: DynArgs,
-    elem_span: usize,
-    _marker: core::marker::PhantomData<&'a T>,
-}
-/// Mutable view over a Dyn<[T]> where T: DynSpec<F>
-pub struct DynArrayMView<'a, F, T: DynSpec<F>> {
-    base: &'a mut [F],
-    count: usize,
-    elem_args: DynArgs,
-    elem_span: usize,
-    _marker: core::marker::PhantomData<&'a T>,
+    elem_layout: T::Layout,
+    elem_len: usize,
+    _marker: PhantomData<&'a ()>,
 }
 
-impl<'a, F, T: DynSpec<F>> DynArrayCView<'a, F, T> {
+pub struct DynArrayMutView<'a, F, T>
+where
+    T: Contig<F>,
+    T::Layout: Clone,
+{
+    base: &'a mut [F],
+    count: usize,
+    elem_layout: T::Layout,
+    elem_len: usize,
+    _marker: PhantomData<&'a ()>,
+}
+
+impl<'a, F, T> DynArrayConstView<'a, F, T>
+where
+    T: Contig<F>,
+    T::Layout: Clone,
+{
     #[inline]
     pub fn len(&self) -> usize {
         self.count
     }
     #[inline]
-    pub fn get(&self, i: usize) -> T::CView<'_> {
+    pub fn get(&self, i: usize) -> T::ConstView<'_> {
         debug_assert!(i < self.count);
-        let span = self.elem_span;
-        let start = i * span;
-        T::cview(&self.base[start..start + span], &self.elem_args)
+        let start = i * self.elem_len;
+        let end = start + self.elem_len;
+        T::view(&self.elem_layout, &self.base[start..end])
     }
 }
-impl<'a, F, T: DynSpec<F>> DynArrayMView<'a, F, T> {
+
+impl<'a, F, T> DynArrayMutView<'a, F, T>
+where
+    T: Contig<F>,
+    T::Layout: Clone,
+{
     #[inline]
     pub fn len(&self) -> usize {
         self.count
     }
     #[inline]
-    pub fn get_mut(&mut self, i: usize) -> T::MView<'_> {
+    pub fn get_mut(&mut self, i: usize) -> T::MutView<'_> {
         debug_assert!(i < self.count);
-        let span = self.elem_span;
-        let start = i * span;
-        T::mview(&mut self.base[start..start + span], &self.elem_args)
+        let start = i * self.elem_len;
+        let end = start + self.elem_len;
+        T::view_mut(&self.elem_layout, &mut self.base[start..end])
+    }
+    #[inline]
+    pub fn get(&self, i: usize) -> T::ConstView<'_> {
+        debug_assert!(i < self.count);
+        let start = i * self.elem_len;
+        let end = start + self.elem_len;
+        T::view(&self.elem_layout, &self.base[start..end])
     }
 }
 
-// ---------- (feature) nalgebra interop ----------
+impl<F, T> Contig<F> for Dyn<[T]>
+where
+    T: Contig<F> + 'static,
+    T::Layout: Clone + 'static,
+{
+    type Config = DynArrayConfig<T::Config>;
+    type Layout = DynArrayLayout<T::Layout>;
+    type ConstView<'a>
+        = DynArrayConstView<'a, F, T>
+    where
+        F: 'a,
+        T::Layout: Clone;
+    type MutView<'a>
+        = DynArrayMutView<'a, F, T>
+    where
+        F: 'a,
+        T::Layout: Clone;
+
+    fn layout(config: &Self::Config) -> Result<Self::Layout> {
+        let elem_layout = T::layout(&config.elem)?;
+        let elem_len = T::len(&elem_layout);
+        Ok(DynArrayLayout {
+            len: config.len,
+            elem_layout,
+            elem_len,
+        })
+    }
+
+    fn len(layout: &Self::Layout) -> usize {
+        layout.len * layout.elem_len
+    }
+
+    fn view<'a>(layout: &'a Self::Layout, buf: &'a [F]) -> Self::ConstView<'a> {
+        debug_assert!(buf.len() >= Self::len(layout));
+        DynArrayConstView {
+            base: buf,
+            count: layout.len,
+            elem_layout: layout.elem_layout.clone(),
+            elem_len: layout.elem_len,
+            _marker: PhantomData,
+        }
+    }
+
+    fn view_mut<'a>(layout: &'a Self::Layout, buf: &'a mut [F]) -> Self::MutView<'a> {
+        debug_assert!(buf.len() >= Self::len(layout));
+        DynArrayMutView {
+            base: buf,
+            count: layout.len,
+            elem_layout: layout.elem_layout.clone(),
+            elem_len: layout.elem_len,
+            _marker: PhantomData,
+        }
+    }
+}
+
+// ---------- Optional nalgebra interop ----------
 
 #[cfg(feature = "nalgebra")]
 pub mod na_types {
     use super::*;
     use nalgebra as na;
 
-    // Fixed-size nalgebra adapters (static)
-    pub struct NaSVector<F, const N: usize>(core::marker::PhantomData<(F, [(); N])>);
-    pub struct NaSMatrix<F, const R: usize, const C: usize>(
-        core::marker::PhantomData<(F, [(); R], [(); C])>,
-    );
-
-    // Dynamic-size nalgebra adapters (dynamic)
-    pub struct NaDVector<F>(core::marker::PhantomData<F>);
-    pub struct NaDMatrix<F>(core::marker::PhantomData<F>);
-
-    // Views (re-export nalgebra slice types for call sites)
-    pub type DVecSlice<'a, F> = na::DVectorView<'a, F>;
-    pub type DVecSliceMut<'a, F> = na::DVectorViewMut<'a, F>;
-    pub type DMatSlice<'a, F> = na::DMatrixView<'a, F>;
-    pub type DMatSliceMut<'a, F> = na::DMatrixViewMut<'a, F>;
-
-    // --- Static vector/matrix: Spec ---
-
-    impl<F, const N: usize> Spec<F> for NaSVector<F, N>
-    where
-        F: na::Scalar + Copy,
-    {
-        const STATIC_LEN: usize = N;
-        type CView<'a>
-            = na::SVector<F, N>
-        where
-            F: 'a;
-        type MView<'a>
-            = na::SVector<F, N>
-        where
-            F: 'a;
-
-        fn cview(buf: &[F]) -> Self::CView<'_> {
-            na::SVector::<F, N>::from_column_slice(buf)
-        }
-        fn mview(buf: &mut [F]) -> Self::MView<'_> {
-            // For SVector, nalgebra expects owned data; however, constructing
-            // from a slice copies. If you want zero-copy, prefer returning a
-            // MatrixSlice view. To stay truly zero-copy, you can instead expose:
-            //   type CView = na::Matrix<F, Const<N>, Const<1>, SliceStorage<'a, F, Const<N>, Const<1>, Const<1>, Const<N>>>
-            // For brevity, we use the simple owned form here. In your real code,
-            // replace with SliceStorage-based view types.
-            na::SVector::<F, N>::from_column_slice(buf)
-        }
+    #[derive(Clone, Copy, Debug)]
+    pub struct DynVectorConfig {
+        pub len: usize,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct DynVectorLayout {
+        pub len: usize,
     }
 
-    impl<F, const R: usize, const C: usize> Spec<F> for NaSMatrix<F, R, C>
-    where
-        F: na::Scalar + Copy,
-    {
-        const STATIC_LEN: usize = R * C;
-        type CView<'a>
-            = na::DMatrix<F>
-        where
-            F: 'a;
-        type MView<'a>
-            = na::DMatrix<F>
-        where
-            F: 'a;
+    pub struct NaDVector<F>(PhantomData<F>);
 
-        fn cview(buf: &[F]) -> Self::CView<'_> {
-            na::DMatrix::<F>::from_column_slice(R, C, buf)
-        }
-        fn mview(buf: &mut [F]) -> Self::MView<'_> {
-            na::DMatrix::<F>::from_column_slice(R, C, buf)
-        }
-    }
-
-    // --- Dynamic vector: DynSpec(len) ---
-
-    impl<F> DynSpec<F> for NaDVector<F>
+    impl<F> Contig<F> for NaDVector<F>
     where
         F: na::Scalar,
     {
-        type CView<'a>
-            = DVecSlice<'a, F>
+        type Config = DynVectorConfig;
+        type Layout = DynVectorLayout;
+        type ConstView<'a>
+            = na::DVectorView<'a, F>
         where
             F: 'a;
-        type MView<'a>
-            = DVecSliceMut<'a, F>
+        type MutView<'a>
+            = na::DVectorViewMut<'a, F>
         where
             F: 'a;
 
-        fn dyn_len(args: &DynArgs) -> usize {
-            args.len.expect("NaDVector requires len")
+        fn layout(config: &Self::Config) -> Result<Self::Layout> {
+            Ok(DynVectorLayout { len: config.len })
         }
-        fn cview<'a>(buf: &'a [F], args: &DynArgs) -> Self::CView<'a> {
-            let n = args.len.expect("NaDVector requires len");
-            na::DVectorView::from_slice(buf, n)
+
+        fn len(layout: &Self::Layout) -> usize {
+            layout.len
         }
-        fn mview<'a>(buf: &'a mut [F], args: &DynArgs) -> Self::MView<'a> {
-            let n = args.len.expect("NaDVector requires len");
-            na::DVectorViewMut::from_slice(buf, n)
+
+        fn view<'a>(layout: &'a Self::Layout, buf: &'a [F]) -> Self::ConstView<'a> {
+            debug_assert!(buf.len() >= layout.len);
+            na::DVectorView::from_slice(buf, layout.len)
+        }
+
+        fn view_mut<'a>(layout: &'a Self::Layout, buf: &'a mut [F]) -> Self::MutView<'a> {
+            debug_assert!(buf.len() >= layout.len);
+            na::DVectorViewMut::from_slice(buf, layout.len)
         }
     }
 
-    // --- Dynamic matrix: DynSpec(shape) ---
+    #[derive(Clone, Copy, Debug)]
+    pub struct DynMatrixConfig {
+        pub rows: usize,
+        pub cols: usize,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct DynMatrixLayout {
+        pub rows: usize,
+        pub cols: usize,
+    }
 
-    impl<F> DynSpec<F> for NaDMatrix<F>
+    pub struct NaDMatrix<F>(PhantomData<F>);
+
+    impl<F> Contig<F> for NaDMatrix<F>
     where
         F: na::Scalar,
     {
-        type CView<'a>
-            = DMatSlice<'a, F>
+        type Config = DynMatrixConfig;
+        type Layout = DynMatrixLayout;
+        type ConstView<'a>
+            = na::DMatrixView<'a, F>
         where
             F: 'a;
-        type MView<'a>
-            = DMatSliceMut<'a, F>
+        type MutView<'a>
+            = na::DMatrixViewMut<'a, F>
         where
             F: 'a;
 
-        fn dyn_len(args: &DynArgs) -> usize {
-            let (r, c) = args.shape.expect("NaDMatrix requires shape");
-            r * c
+        fn layout(config: &Self::Config) -> Result<Self::Layout> {
+            Ok(DynMatrixLayout {
+                rows: config.rows,
+                cols: config.cols,
+            })
         }
-        fn cview<'a>(buf: &'a [F], args: &DynArgs) -> Self::CView<'a> {
-            let (r, c) = args.shape.expect("NaDMatrix requires shape");
-            na::DMatrixView::from_slice_generic(buf, na::Dyn(r), na::Dyn(c))
+
+        fn len(layout: &Self::Layout) -> usize {
+            layout.rows * layout.cols
         }
-        fn mview<'a>(buf: &'a mut [F], args: &DynArgs) -> Self::MView<'a> {
-            let (r, c) = args.shape.expect("NaDMatrix requires shape");
-            na::DMatrixViewMut::from_slice_generic(buf, na::Dyn(r), na::Dyn(c))
+
+        fn view<'a>(layout: &'a Self::Layout, buf: &'a [F]) -> Self::ConstView<'a> {
+            debug_assert!(buf.len() >= Self::len(layout));
+            na::DMatrixView::from_slice_generic(buf, na::Dyn(layout.rows), na::Dyn(layout.cols))
+        }
+
+        fn view_mut<'a>(layout: &'a Self::Layout, buf: &'a mut [F]) -> Self::MutView<'a> {
+            debug_assert!(buf.len() >= Self::len(layout));
+            na::DMatrixViewMut::from_slice_generic(buf, na::Dyn(layout.rows), na::Dyn(layout.cols))
         }
     }
 }
 
-// Re-export commonly used items for convenience in downstream code.
+// ---------- Prelude ----------
+
 pub mod prelude {
     #[cfg(feature = "nalgebra")]
     pub use super::na_types::*;
     pub use super::{
-        Dyn, DynArgs, DynSpec, LayoutError, Result, Spec, TakeCursor, Vec3, Vec3View, Vec3ViewMut,
+        Contig, Dyn, DynArrayConfig, DynArrayConstView, DynArrayLayout, DynArrayMutView,
+        LayoutError, Result, TakeCursor, Vec3, Vec3View, Vec3ViewMut,
     };
 }
