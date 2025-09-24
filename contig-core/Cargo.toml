@@ -9,3 +9,6 @@ nalgebra = ["dep:nalgebra"]
 
 [dependencies]
 nalgebra = { version = "0.34", optional = true, default-features = true }
+
+[dev-dependencies]
+contig-derive = { path = "../contig-derive" }

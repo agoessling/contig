@@ -1,0 +1,19 @@
+error[E0599]: no function or associated item named `view_mut` found for struct `MissingImport` in the current scope
+  --> tests/ui/missing_contig_import.rs:12:28
+   |
+ 3 | #[contig(scalar = f64)]
+   | ----------------------- function or associated item `view_mut` not found for this struct
+...
+12 |     let _ = MissingImport::view_mut(&layout, &mut buf);
+   |                            ^^^^^^^^ function or associated item not found in `MissingImport`
+   |
+   = help: items from traits can only be used if the trait is in scope
+help: trait `Contig` which provides `view_mut` is implemented but not in scope; perhaps you want to import it
+   |
+ 1 + use contig_core::Contig;
+   |
+help: there is an associated function `view` with a similar name
+   |
+12 -     let _ = MissingImport::view_mut(&layout, &mut buf);
+12 +     let _ = MissingImport::view(&layout, &mut buf);
+   |

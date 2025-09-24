@@ -1,3 +1,10 @@
+//! `#[contig]` derive: generates config/layout/view types plus a `Contig` impl
+//! for concrete user structs.
+//!
+//! The macro requires `#[contig(scalar = <ty>)]` to specify the scalar type (e.g. `f64`).
+//! It only supports non-generic structs with named fields; per-field `#[contig(...)]`
+//! attributes determine whether a field is dynamic and what runtime arguments it needs.
+
 use proc_macro::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use syn::{
@@ -5,12 +12,15 @@ use syn::{
     parse_macro_input, parse_quote, punctuated::Punctuated, spanned::Spanned,
 };
 
+/// Clone a field, removing any `#[contig(...)]` helper attributes so they are
+/// not re-emitted in the generated struct definition.
 fn strip_contig_attrs(field: &syn::Field) -> syn::Field {
     let mut clone = field.clone();
     clone.attrs.retain(|attr| !attr.path().is_ident("contig"));
     clone
 }
 
+/// Parse the scalar type from the attribute arguments (`#[contig(scalar = ...)]`).
 fn parse_scalar_type(attr: TokenStream) -> syn::Result<Type> {
     let parser = Punctuated::<MetaNameValue, Token![,]>::parse_terminated;
     let args = parser
@@ -32,10 +42,43 @@ fn parse_scalar_type(attr: TokenStream) -> syn::Result<Type> {
     ))
 }
 
+/// Field-level helper attributes are currently parsed but unused; this stub
+/// remains so we can extend handling later without touching call sites.
 fn parse_flags(attrs: &[Attribute]) {
     let _ = attrs;
 }
 
+/// Expand a struct annotated with `#[contig(...)]` into a fully operational
+/// configuration/layout/view trio plus a [`contig_core::Contig`] implementation.
+///
+/// ```
+/// use contig_core::Vec3;
+/// use contig_derive::contig;
+///
+/// #[contig(scalar = f64)]
+/// struct Pose {
+///     position: Vec3<f64>,
+///     velocity: Vec3<f64>,
+/// }
+///
+/// let cfg = PoseCfg {
+///     position: (),
+///     velocity: (),
+/// };
+/// let layout = PoseLayout::from_config(&cfg).unwrap();
+/// let mut buffer = vec![0.0; layout.len()];
+/// {
+///     let mut pose = layout.view(buffer.as_mut_slice());
+///     pose.position().set(1.0, 0.0, 0.0);
+///     pose.velocity().set(0.0, 1.0, 0.0);
+/// }
+/// let pose = layout.cview(buffer.as_slice());
+/// assert_eq!(*pose.position().x(), 1.0);
+/// ```
+///
+/// The macro preserves the user-written struct (minus helper attributes) and
+/// emits sibling `Cfg`, `Layout`, `View`, and `ConstView` types alongside a
+/// [`contig_core::Contig`] implementation.
 #[proc_macro_attribute]
 pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
     let scalar_ty = match parse_scalar_type(attr) {
@@ -84,6 +127,7 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
     let layout_ident = format_ident!("{}Layout", struct_ident);
     let view_ident = format_ident!("{}View", struct_ident);
     let cview_ident = format_ident!("{}ConstView", struct_ident);
+    let struct_name = struct_ident.to_string();
 
     let cleaned_fields: Vec<syn::Field> = fields.iter().map(strip_contig_attrs).collect();
 
@@ -101,15 +145,44 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
         let fty = &field.ty;
         let off_ident = format_ident!("off_{}", fname);
         let lay_ident = format_ident!("layout_{}", fname);
+        let fname_str = fname.to_string();
+        let cfg_field_doc = format!(
+            "Runtime configuration for `{}::{}`.",
+            struct_name.as_str(),
+            fname_str
+        );
+        let offset_doc = format!(
+            "Scalar range covering `{}::{}` inside the buffer.",
+            struct_name.as_str(),
+            fname_str
+        );
+        let layout_field_doc = format!(
+            "Layout metadata for `{}::{}`.",
+            struct_name.as_str(),
+            fname_str
+        );
+        let mut_method_doc = format!(
+            "Borrow a mutable view into `{}::{}`.",
+            struct_name.as_str(),
+            fname_str
+        );
+        let const_method_doc = format!(
+            "Borrow a read-only view into `{}::{}`.",
+            struct_name.as_str(),
+            fname_str
+        );
 
         cfg_fields.push(quote! {
+            #[doc = #cfg_field_doc]
             pub #fname: <#fty as contig_core::Contig<#scalar_ty>>::Config
         });
 
         layout_struct_fields.push(quote! {
+            #[doc = #offset_doc]
             pub #off_ident: core::ops::Range<usize>
         });
         layout_struct_fields.push(quote! {
+            #[doc = #layout_field_doc]
             pub #lay_ident: <#fty as contig_core::Contig<#scalar_ty>>::Layout
         });
 
@@ -123,6 +196,7 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
         });
 
         view_methods_mut.push(quote! {
+            #[doc = #mut_method_doc]
             pub fn #fname(&mut self) -> <#fty as contig_core::Contig<#scalar_ty>>::MutView<'_> {
                 <#fty as contig_core::Contig<#scalar_ty>>::view_mut(
                     &self.layout.#lay_ident,
@@ -131,6 +205,7 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         });
         view_methods_const.push(quote! {
+            #[doc = #const_method_doc]
             pub fn #fname(&self) -> <#fty as contig_core::Contig<#scalar_ty>>::ConstView<'_> {
                 <#fty as contig_core::Contig<#scalar_ty>>::view(
                     &self.layout.#lay_ident,
@@ -144,6 +219,33 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
         });
     }
 
+    let cfg_doc = format!(
+        "Runtime configuration for `{}` produced by `#[contig]`.",
+        struct_name.as_str()
+    );
+    let layout_doc = format!(
+        "Layout metadata for `{}` computed by `#[contig]`.",
+        struct_name.as_str()
+    );
+    let layout_len_doc = "Total scalar elements spanned by this layout.";
+    let view_doc = format!(
+        "Mutable view over `{}` borrowed from a contiguous buffer.",
+        struct_name.as_str()
+    );
+    let cview_doc = format!(
+        "Read-only view over `{}` borrowed from a contiguous buffer.",
+        struct_name.as_str()
+    );
+    let view_as_mut_slice_doc = "Expose the underlying mutable slice backing this view.";
+    let const_view_as_slice_doc = "Expose the underlying immutable slice backing this view.";
+    let layout_from_config_doc = format!(
+        "Compute the layout for `{}` from its configuration.",
+        struct_name.as_str()
+    );
+    let layout_len_method_doc = "Total scalar footprint of this layout.";
+    let layout_view_doc = "Create a mutable view into the supplied buffer.";
+    let layout_cview_doc = "Create a read-only view into the supplied buffer.";
+
     let struct_definition = {
         let attrs = &retained_attrs;
         quote! {
@@ -155,6 +257,7 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let cfg_definition = quote! {
+        #[doc = #cfg_doc]
         #[derive(Clone)]
         #vis struct #cfg_ident {
             #( #cfg_fields, )*
@@ -162,15 +265,18 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let layout_definition = quote! {
+        #[doc = #layout_doc]
         #[derive(Clone)]
         #vis struct #layout_ident {
             #( #layout_struct_fields, )*
+            #[doc = #layout_len_doc]
             pub len: usize,
         }
     };
 
     let layout_impl = quote! {
         impl #layout_ident {
+            #[doc = #layout_from_config_doc]
             pub fn from_config(cfg: &#cfg_ident) -> contig_core::Result<Self> {
                 let mut __cursor = contig_core::TakeCursor::new();
                 #( #layout_builders )*
@@ -182,10 +288,12 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
 
             #[inline]
+            #[doc = #layout_len_method_doc]
             pub fn len(&self) -> usize {
                 self.len
             }
 
+            #[doc = #layout_view_doc]
             pub fn view<'a>(
                 &'a self,
                 base: &'a mut [#scalar_ty],
@@ -197,6 +305,7 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #view_ident { base, layout: self }
             }
 
+            #[doc = #layout_cview_doc]
             pub fn cview<'a>(
                 &'a self,
                 base: &'a [#scalar_ty],
@@ -211,6 +320,7 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let view_definition = quote! {
+        #[doc = #view_doc]
         #vis struct #view_ident<'a> {
             base: &'a mut [#scalar_ty],
             layout: &'a #layout_ident,
@@ -218,6 +328,7 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let const_view_definition = quote! {
+        #[doc = #cview_doc]
         #vis struct #cview_ident<'a> {
             base: &'a [#scalar_ty],
             layout: &'a #layout_ident,
@@ -227,6 +338,7 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
     let view_impl = quote! {
         impl<'a> #view_ident<'a> {
             #[inline]
+            #[doc = #view_as_mut_slice_doc]
             pub fn as_mut_slice(&mut self) -> &mut [#scalar_ty] {
                 self.base
             }
@@ -237,6 +349,7 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
     let const_view_impl = quote! {
         impl<'a> #cview_ident<'a> {
             #[inline]
+            #[doc = #const_view_as_slice_doc]
             pub fn as_slice(&self) -> &[#scalar_ty] {
                 self.base
             }

@@ -12,3 +12,6 @@ quote = "1.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 
 contig-core = { path = "../contig-core" }
+
+[dev-dependencies]
+trybuild = "1"

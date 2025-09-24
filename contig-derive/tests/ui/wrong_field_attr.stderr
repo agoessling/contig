@@ -1,0 +1,5 @@
+error: #[contig] requires named fields
+ --> tests/ui/wrong_field_attr.rs:4:1
+  |
+4 | struct WrongAttr(f64);
+  | ^^^^^^

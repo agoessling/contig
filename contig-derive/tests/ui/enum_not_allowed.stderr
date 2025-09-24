@@ -1,0 +1,5 @@
+error: #[contig] supports only structs
+ --> tests/ui/enum_not_allowed.rs:4:1
+  |
+4 | enum NotAllowed {
+  | ^^^^

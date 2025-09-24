@@ -1,0 +1,5 @@
+error: #[contig] does not support generic structs; instantiate a concrete type
+ --> tests/ui/generic_struct.rs:4:15
+  |
+4 | struct Generic<T> {
+  |               ^
