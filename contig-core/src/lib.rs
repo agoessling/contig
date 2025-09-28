@@ -148,7 +148,6 @@ where
     count: usize,
     elem_layout: T::Layout,
     elem_len: usize,
-    _marker: PhantomData<&'a ()>,
 }
 
 /// Mutable view into a contiguous run of `count` elements of type `T`.
@@ -161,7 +160,6 @@ where
     count: usize,
     elem_layout: T::Layout,
     elem_len: usize,
-    _marker: PhantomData<&'a ()>,
 }
 
 impl<'a, F, T> DynArrayConstView<'a, F, T>
@@ -252,7 +250,6 @@ where
             count: layout.len,
             elem_layout: layout.elem_layout.clone(),
             elem_len: layout.elem_len,
-            _marker: PhantomData,
         }
     }
 
@@ -263,7 +260,6 @@ where
             count: layout.len,
             elem_layout: layout.elem_layout.clone(),
             elem_len: layout.elem_len,
-            _marker: PhantomData,
         }
     }
 }
