@@ -19,6 +19,6 @@ fn main() {
             elem: InnerCfg { value: () },
         },
     };
-    let layout = OuterLayout::from_config(&cfg).unwrap();
+    let layout = OuterLayout::from_config(&cfg);
     assert_eq!(Outer::len(&layout), 2);
 }

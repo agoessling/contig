@@ -1,4 +1,4 @@
-use contig_core::{Contig, Result};
+use contig_core::Contig;
 use core::marker::PhantomData;
 
 /// Marker type representing a fixed `[F; 3]` contiguous vector.
@@ -72,8 +72,8 @@ impl<F> Contig<F> for Vec3<F> {
     where
         F: 'a;
 
-    fn layout(_config: &Self::Config) -> Result<Self::Layout> {
-        Ok(Vec3Layout)
+    fn layout(_config: &Self::Config) -> Self::Layout {
+        Vec3Layout
     }
 
     fn len(_layout: &Self::Layout) -> usize {

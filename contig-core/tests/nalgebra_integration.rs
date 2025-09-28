@@ -6,7 +6,7 @@ use contig_core::prelude::*;
 #[test]
 fn nadmatrix_contig_roundtrip() {
     let cfg = DynMatrixConfig { rows: 2, cols: 3 };
-    let layout = NaDMatrix::<f64>::layout(&cfg).unwrap();
+    let layout = NaDMatrix::<f64>::layout(&cfg);
     assert_eq!(NaDMatrix::<f64>::len(&layout), 6);
 
     let mut buf = vec![0.0f64; 6];

@@ -35,9 +35,9 @@ fn robot_layout_roundtrip() {
         scalars: DynArrayConfig { len: 4, elem: () },
     };
 
-    let layout = RobotLayout::from_config(&cfg).expect("layout");
-    let expected_len = Dyn::<[Link]>::len(&Dyn::<[Link]>::layout(&cfg.links).unwrap())
-        + Dyn::<[f64]>::len(&Dyn::<[f64]>::layout(&cfg.scalars).unwrap());
+    let layout = RobotLayout::from_config(&cfg);
+    let expected_len = Dyn::<[Link]>::len(&Dyn::<[Link]>::layout(&cfg.links))
+        + Dyn::<[f64]>::len(&Dyn::<[f64]>::layout(&cfg.scalars));
     assert_eq!(Robot::len(&layout), expected_len);
 
     let mut buf = vec![0.0f64; layout.len()];
@@ -92,7 +92,7 @@ fn nested_dynamic_array_roundtrip() {
         },
     };
 
-    let layout = NestedLayout::from_config(&cfg).expect("layout");
+    let layout = NestedLayout::from_config(&cfg);
     assert_eq!(Nested::len(&layout), 2 * 3);
     let mut buf = vec![0.0f64; layout.len()];
 

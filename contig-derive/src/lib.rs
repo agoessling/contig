@@ -61,7 +61,7 @@ fn parse_flags(attrs: &[Attribute]) {
 /// }
 ///
 /// let cfg = PointMassCfg { mass: (), bias: () };
-/// let layout = PointMassLayout::from_config(&cfg).unwrap();
+/// let layout = PointMassLayout::from_config(&cfg);
 /// let mut buffer = vec![0.0; layout.len()];
 /// {
 ///     let mut view = layout.view(buffer.as_mut_slice());
@@ -187,7 +187,7 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
         layout_inits.push(quote! { #lay_ident });
 
         layout_builders.push(quote! {
-            let #lay_ident = <#fty as contig_core::Contig<#scalar_ty>>::layout(&cfg.#fname)?;
+            let #lay_ident = <#fty as contig_core::Contig<#scalar_ty>>::layout(&cfg.#fname);
             let #off_ident = __cursor
                 .take_range(<#fty as contig_core::Contig<#scalar_ty>>::len(&#lay_ident));
         });
@@ -274,14 +274,14 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
     let layout_impl = quote! {
         impl #layout_ident {
             #[doc = #layout_from_config_doc]
-            pub fn from_config(cfg: &#cfg_ident) -> contig_core::Result<Self> {
+            pub fn from_config(cfg: &#cfg_ident) -> Self {
                 let mut __cursor = contig_core::TakeCursor::new();
                 #( #layout_builders )*
                 let len = __cursor.finish();
-                Ok(Self {
+                Self {
                     #( #layout_inits, )*
                     len,
-                })
+                }
             }
 
             #[inline]
@@ -371,7 +371,7 @@ pub fn contig(attr: TokenStream, item: TokenStream) -> TokenStream {
             type ConstView<'a> = #const_view_type;
             type MutView<'a> = #view_type;
 
-            fn layout(config: &Self::Config) -> contig_core::Result<Self::Layout> {
+            fn layout(config: &Self::Config) -> Self::Layout {
                 #layout_ident::from_config(config)
             }
 

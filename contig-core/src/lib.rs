@@ -14,19 +14,6 @@
 
 use core::{marker::PhantomData, ops::Range};
 
-// ---------- Core error/result ----------
-
-/// Errors that can occur while computing contiguous layouts.
-#[derive(Debug)]
-pub enum LayoutError {
-    /// The computed footprint would overflow `usize`.
-    Overflow,
-    /// The configuration yielded an invalid size (usually reported with context).
-    InvalidSize(&'static str),
-}
-/// Convenient result alias that uses [`LayoutError`] as the error type.
-pub type Result<T> = core::result::Result<T, LayoutError>;
-
 // ---------- Slice range cursor (linear, disjoint) ----------
 
 /// A tiny "allocator" that carves disjoint ranges from a linear buffer.
@@ -76,8 +63,8 @@ pub trait Contig<F> {
         F: 'a,
         Self::Layout: 'a;
 
-    /// Compute layout metadata from configuration, returning a fully-populated [`Self::Layout`].
-    fn layout(config: &Self::Config) -> Result<Self::Layout>;
+    /// Compute layout metadata from configuration.
+    fn layout(config: &Self::Config) -> Self::Layout;
     /// Total scalar footprint required by a value with this layout.
     fn len(layout: &Self::Layout) -> usize;
     /// Build a read-only view into `buf` using this layout.
@@ -102,8 +89,8 @@ macro_rules! impl_contig_scalar {
                 type ConstView<'a> = &'a $t;
                 type MutView<'a> = &'a mut $t;
 
-                fn layout(_config: &Self::Config) -> Result<Self::Layout> {
-                    Ok(ScalarLayout)
+                fn layout(_config: &Self::Config) -> Self::Layout {
+                    ScalarLayout
                 }
 
                 fn len(_layout: &Self::Layout) -> usize {
@@ -244,14 +231,14 @@ where
         F: 'a,
         T::Layout: Clone;
 
-    fn layout(config: &Self::Config) -> Result<Self::Layout> {
-        let elem_layout = T::layout(&config.elem)?;
+    fn layout(config: &Self::Config) -> Self::Layout {
+        let elem_layout = T::layout(&config.elem);
         let elem_len = T::len(&elem_layout);
-        Ok(DynArrayLayout {
+        DynArrayLayout {
             len: config.len,
             elem_layout,
             elem_len,
-        })
+        }
     }
 
     fn len(layout: &Self::Layout) -> usize {
@@ -320,8 +307,8 @@ pub mod na_types {
         where
             F: 'a;
 
-        fn layout(config: &Self::Config) -> Result<Self::Layout> {
-            Ok(DynVectorLayout { len: config.len })
+        fn layout(config: &Self::Config) -> Self::Layout {
+            DynVectorLayout { len: config.len }
         }
 
         fn len(layout: &Self::Layout) -> usize {
@@ -374,11 +361,11 @@ pub mod na_types {
         where
             F: 'a;
 
-        fn layout(config: &Self::Config) -> Result<Self::Layout> {
-            Ok(DynMatrixLayout {
+        fn layout(config: &Self::Config) -> Self::Layout {
+            DynMatrixLayout {
                 rows: config.rows,
                 cols: config.cols,
-            })
+            }
         }
 
         fn len(layout: &Self::Layout) -> usize {
@@ -404,8 +391,7 @@ pub mod prelude {
     #[cfg(feature = "nalgebra")]
     pub use super::na_types::*;
     pub use super::{
-        Contig, Dyn, DynArrayConfig, DynArrayConstView, DynArrayLayout, DynArrayMutView,
-        LayoutError, Result, TakeCursor,
+        Contig, Dyn, DynArrayConfig, DynArrayConstView, DynArrayLayout, DynArrayMutView, TakeCursor,
     };
 }
 
@@ -457,8 +443,8 @@ mod tests {
         where
             F: 'a;
 
-        fn layout(_config: &Self::Config) -> Result<Self::Layout> {
-            Ok(TripleLayout)
+        fn layout(_config: &Self::Config) -> Self::Layout {
+            TripleLayout
         }
 
         fn len(_layout: &Self::Layout) -> usize {
@@ -488,7 +474,7 @@ mod tests {
 
     #[test]
     fn scalar_contig_roundtrip() {
-        let layout = f64::layout(&()).unwrap();
+        let layout = f64::layout(&());
         assert_eq!(f64::len(&layout), 1);
         let mut buf = [0.0f64; 1];
         {
@@ -501,7 +487,7 @@ mod tests {
 
     #[test]
     fn triple_contig_views_share_buffer() {
-        let layout = Triple::<f64>::layout(&()).unwrap();
+        let layout = Triple::<f64>::layout(&());
         assert_eq!(Triple::<f64>::len(&layout), 3);
         let mut buf = [0.0f64; 3];
         {
@@ -518,7 +504,7 @@ mod tests {
     #[test]
     fn dyn_array_of_scalars() {
         let cfg = DynArrayConfig { len: 4, elem: () };
-        let layout = Dyn::<[f64]>::layout(&cfg).unwrap();
+        let layout = Dyn::<[f64]>::layout(&cfg);
         assert_eq!(Dyn::<[f64]>::len(&layout), 4);
         let mut buf = vec![0.0f64; 4];
 
@@ -539,7 +525,7 @@ mod tests {
     #[test]
     fn dyn_array_of_triples() {
         let cfg = DynArrayConfig { len: 2, elem: () };
-        let layout = Dyn::<[Triple<f64>]>::layout(&cfg).unwrap();
+        let layout = Dyn::<[Triple<f64>]>::layout(&cfg);
         assert_eq!(Dyn::<[Triple<f64>]>::len(&layout), 6);
         let mut buf = vec![0.0f64; 6];
 
@@ -565,7 +551,7 @@ mod tests {
     #[test]
     fn dyn_array_zero_length_has_zero_footprint() {
         let cfg = DynArrayConfig { len: 0, elem: () };
-        let layout = Dyn::<[f64]>::layout(&cfg).unwrap();
+        let layout = Dyn::<[f64]>::layout(&cfg);
         assert_eq!(Dyn::<[f64]>::len(&layout), 0);
         let buf: [f64; 0] = [];
         let view = Dyn::<[f64]>::view(&layout, &buf);
@@ -579,7 +565,7 @@ fn nalgebra_contig_vector_roundtrip() {
     use crate::na_types::{DynVectorConfig, NaDVector};
 
     let cfg = DynVectorConfig { len: 3 };
-    let layout = NaDVector::<f64>::layout(&cfg).unwrap();
+    let layout = NaDVector::<f64>::layout(&cfg);
     assert_eq!(NaDVector::<f64>::len(&layout), 3);
     let mut buf = vec![0.0f64; 3];
     {

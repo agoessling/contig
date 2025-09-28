@@ -13,6 +13,6 @@ fn main() {
         dyns: DynArrayConfig { len: 2, elem: () },
         scalar: (),
     };
-    let layout = SampleLayout::from_config(&cfg).unwrap();
+    let layout = SampleLayout::from_config(&cfg);
     assert_eq!(<Sample as Contig<f64>>::len(&layout), 3);
 }

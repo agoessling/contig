@@ -7,7 +7,7 @@ struct MissingImport {
 
 fn main() {
     let cfg = MissingImportCfg { value: () };
-    let layout = MissingImportLayout::from_config(&cfg).unwrap();
+    let layout = MissingImportLayout::from_config(&cfg);
     let mut buf = vec![0.0; layout.len()];
     let _ = MissingImport::view_mut(&layout, &mut buf);
 }
